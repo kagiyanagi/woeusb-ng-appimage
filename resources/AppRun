@@ -1,0 +1,82 @@
+#!/bin/bash
+###############################################################################
+# AppRun - Self-contained launcher for WoeUSB-ng AppImage
+# Handles GUI (default) and CLI (--cli) modes with root elevation
+###############################################################################
+
+APPDIR=$(dirname "$(readlink -f "$0")")
+
+# --- Library and binary paths ------------------------------------------------
+export LD_LIBRARY_PATH="$APPDIR/usr/lib:${LD_LIBRARY_PATH:-}"
+export PATH="$APPDIR/usr/bin:$PATH"
+
+# --- Python ------------------------------------------------------------------
+PYTHON_VERSION=$("$APPDIR/usr/bin/python3" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "3.13")
+export PYTHONHOME="$APPDIR/usr"
+export PYTHONPATH="$APPDIR/usr/lib/python3/site-packages:$APPDIR/usr/lib/python${PYTHON_VERSION}:$APPDIR/usr/lib/python${PYTHON_VERSION}/lib-dynload:${PYTHONPATH:-}"
+
+# --- GTK / GDK / Pango -------------------------------------------------------
+export GTK_DATA_PREFIX="$APPDIR/usr"
+export GTK_THEME=Adwaita
+export GTK_PATH="$APPDIR/usr/lib/gtk-3.0"
+export GTK3_MODULES=""
+
+# GDK pixbuf loaders
+export GDK_PIXBUF_MODULE_FILE="$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"
+export GDK_PIXBUF_MODULEDIR="$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"
+
+# Pango
+export PANGO_LIBDIR="$APPDIR/usr/lib"
+
+# GLib schemas
+export GSETTINGS_SCHEMA_DIR="$APPDIR/usr/share/glib-2.0/schemas"
+
+# Icons and themes
+export XDG_DATA_DIRS="$APPDIR/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+
+# Fontconfig - use host fonts with our libs
+export FONTCONFIG_PATH="${FONTCONFIG_PATH:-/etc/fonts}"
+
+# --- GRUB modules ------------------------------------------------------------
+if [ -d "$APPDIR/usr/lib/grub" ]; then
+    export GRUB_PREFIX="$APPDIR/usr/lib/grub"
+fi
+
+# --- Root elevation ----------------------------------------------------------
+# Allow --help/-h without root
+if [ "$EUID" -ne 0 ] && [ "${1:-}" != "--help" ] && [ "${1:-}" != "-h" ]; then
+    echo "WoeUSB-ng requires root privileges for disk operations."
+    echo "Elevating with pkexec..."
+    if [ -n "${APPIMAGE:-}" ]; then
+        exec pkexec env \
+            DISPLAY="${DISPLAY:-}" \
+            XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}" \
+            WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+            XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
+            "$APPIMAGE" "$@"
+    else
+        exec pkexec env \
+            DISPLAY="${DISPLAY:-}" \
+            XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}" \
+            WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+            XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
+            "$(readlink -f "$0")" "$@"
+    fi
+fi
+
+# --- Launch ------------------------------------------------------------------
+if [ "${1:-}" = "--cli" ]; then
+    shift
+    exec "$APPDIR/usr/bin/python3" -c "
+import sys
+sys.argv = ['woeusb'] + sys.argv[1:]
+from WoeUSB import core
+core.run()
+" "$@"
+fi
+
+# Default: launch GUI
+exec "$APPDIR/usr/bin/python3" -c "
+from WoeUSB import gui
+gui.run()
+" "$@"
