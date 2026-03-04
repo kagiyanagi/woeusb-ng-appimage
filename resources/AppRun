@@ -7,6 +7,7 @@
 APPDIR=$(dirname "$(readlink -f "$0")")
 
 # --- Library and binary paths ------------------------------------------------
+export DBUS_SESSION_BUS_ADDRESS=disabled:
 export LD_LIBRARY_PATH="$APPDIR/usr/lib:${LD_LIBRARY_PATH:-}"
 export PATH="$APPDIR/usr/bin:$PATH"
 
@@ -31,11 +32,19 @@ export PANGO_LIBDIR="$APPDIR/usr/lib"
 # GLib schemas
 export GSETTINGS_SCHEMA_DIR="$APPDIR/usr/share/glib-2.0/schemas"
 
+# Use in-memory GSettings backend so dconf/dbus is never needed.
+# Without this, GTK spams "failed to commit changes to dconf" warnings
+# on systems where dbus-launch is unavailable or not running as root.
+export GSETTINGS_BACKEND=memory
+
 # Icons and themes
 export XDG_DATA_DIRS="$APPDIR/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 
 # Fontconfig - use host fonts with our libs
 export FONTCONFIG_PATH="${FONTCONFIG_PATH:-/etc/fonts}"
+
+# Pass through D-Bus so GTK file dialogs and polkit work correctly
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}"
 
 # --- GRUB modules ------------------------------------------------------------
 if [ -d "$APPDIR/usr/lib/grub" ]; then
@@ -43,31 +52,56 @@ if [ -d "$APPDIR/usr/lib/grub" ]; then
 fi
 
 # --- Root elevation ----------------------------------------------------------
-# Allow --help/-h without root
-if [ "$EUID" -ne 0 ] && [ "${1:-}" != "--help" ] && [ "${1:-}" != "-h" ]; then
+# Allow --help/-h and --version without root
+NEEDS_ROOT=1
+for arg in "$@"; do
+    case "$arg" in
+        --help|-h|--version) NEEDS_ROOT=0; break ;;
+    esac
+done
+
+if [ "$EUID" -ne 0 ] && [ "$NEEDS_ROOT" -eq 1 ]; then
     echo "WoeUSB-ng requires root privileges for disk operations."
-    echo "Elevating with pkexec..."
-    if [ -n "${APPIMAGE:-}" ]; then
+
+    # Prefer pkexec (shows a GUI auth dialog), fall back to sudo
+    if command -v pkexec &>/dev/null; then
+        echo "Elevating with pkexec..."
+        LAUNCHER="${APPIMAGE:-$(readlink -f "$0")}"
         exec pkexec env \
             DISPLAY="${DISPLAY:-}" \
             XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}" \
             WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
             XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
-            "$APPIMAGE" "$@"
+            DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" \
+            "$LAUNCHER" "$@"
+    elif command -v sudo &>/dev/null; then
+        echo "pkexec not found, elevating with sudo..."
+        LAUNCHER="${APPIMAGE:-$(readlink -f "$0")}"
+        exec sudo \
+            DISPLAY="${DISPLAY:-}" \
+            XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}" \
+            WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+            XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
+            DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" \
+            "$LAUNCHER" "$@"
     else
-        exec pkexec env \
-            DISPLAY="${DISPLAY:-}" \
-            XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}" \
-            WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
-            XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
-            "$(readlink -f "$0")" "$@"
+        echo "ERROR: Neither pkexec nor sudo is available." >&2
+        echo "       Re-run as root: sudo $0 $*" >&2
+        exit 1
     fi
+fi
+
+# --- Sanity check Python + wx (fail fast with a useful message) --------------
+if ! "$APPDIR/usr/bin/python3" -c "import wx" &>/dev/null; then
+    echo "ERROR: Failed to import wxPython. The AppImage may be corrupted." >&2
+    echo "       Try re-downloading the AppImage." >&2
+    exit 1
 fi
 
 # --- Launch ------------------------------------------------------------------
 if [ "${1:-}" = "--cli" ]; then
     shift
-    exec "$APPDIR/usr/bin/python3" -c "
+    exec "$APPDIR/usr/bin/python3" -W ignore::SyntaxWarning -c "
 import sys
 sys.argv = ['woeusb'] + sys.argv[1:]
 from WoeUSB import core
@@ -75,8 +109,16 @@ core.run()
 " "$@"
 fi
 
+if [ "${1:-}" = "--version" ]; then
+    exec "$APPDIR/usr/bin/python3" -c "
+from WoeUSB import __version__
+print(__version__)
+" 2>/dev/null || echo "WoeUSB-ng (version unknown)"
+    exit 0
+fi
+
 # Default: launch GUI
-exec "$APPDIR/usr/bin/python3" -c "
+exec "$APPDIR/usr/bin/python3" -W ignore::SyntaxWarning -c "
 from WoeUSB import gui
 gui.run()
 " "$@"

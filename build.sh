@@ -9,6 +9,10 @@ set -uo pipefail
 ###############################################################################
 
 VERSION="${1:-0.2.12}"
+NO_CLEAN=0
+for arg in "$@"; do
+    [ "$arg" = "--no-clean" ] && NO_CLEAN=1
+done
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
 BUILDDIR="$SCRIPTDIR/build"
 APPDIR="$BUILDDIR/AppDir"
@@ -37,7 +41,13 @@ Install with:
 fi
 
 # --- Clean -------------------------------------------------------------------
-rm -rf "$BUILDDIR"
+if [ "$NO_CLEAN" -eq 1 ]; then
+    log "Skipping full clean (--no-clean). Reusing downloaded RPMs."
+    log "  Wiping AppDir and source clone only..."
+    rm -rf "$APPDIR" "$BUILDDIR/WoeUSB-ng"
+else
+    rm -rf "$BUILDDIR"
+fi
 mkdir -p "$BUILDDIR/deps-rpms"
 
 # --- Clone WoeUSB-ng ---------------------------------------------------------
@@ -91,6 +101,7 @@ ALL_PACKAGES=(
     grub2-common
     grub2-pc-modules
     ntfs-3g
+    ntfs-3g-libs
     ntfsprogs
     dosfstools
     p7zip
@@ -135,24 +146,32 @@ ALL_PACKAGES=(
     libpng
     libjpeg-turbo
     pixman
-
-    # Required by wxPython's _core.so on non-SELinux hosts (Ubuntu, Arch, etc.)
-    # Without this: ImportError: libselinux.so.1: cannot open shared object file
+    # Non-SELinux hosts: wxPython's _core.so links libselinux at runtime
     libselinux
+    # GTK/Pango chain requires libxml2
     libxml2
+    # Mesa Gallium driver (libgallium-*.so)
     mesa-libgallium
+    # FUSE3 runtime
     fuse3-libs
+    # Image quantization (Pillow dep)
     libimagequant
+    # parted + all grub2 tools link libdevmapper.so.1.02
+    device-mapper-libs
 )
 
 cd "$BUILDDIR/deps-rpms"
 
-dnf download --arch x86_64 --arch noarch \
-    --skip-unavailable \
-    --disablerepo=fedora-cisco-openh264 \
-    --destdir="$BUILDDIR/deps-rpms" \
-    "${ALL_PACKAGES[@]}" || \
-    warn "Some packages could not be downloaded (see above)"
+if [ "$NO_CLEAN" -eq 1 ] && [ "$(ls -1 "$BUILDDIR/deps-rpms"/*.rpm 2>/dev/null | wc -l)" -gt 0 ]; then
+    log "Reusing $(ls -1 "$BUILDDIR/deps-rpms"/*.rpm | wc -l) cached RPMs (--no-clean)"
+else
+    dnf download --arch x86_64 --arch noarch \
+        --skip-unavailable \
+        --disablerepo=fedora-cisco-openh264 \
+        --destdir="$BUILDDIR/deps-rpms" \
+        "${ALL_PACKAGES[@]}" || \
+        warn "Some packages could not be downloaded (see above)"
+fi
 
 RPM_COUNT=$(ls -1 "$BUILDDIR/deps-rpms"/*.rpm 2>/dev/null | wc -l)
 log "Downloaded $RPM_COUNT RPMs total"
@@ -446,11 +465,54 @@ fi
 
 echo ""
 
+# --- Automated ldd audit -----------------------------------------------------
+# Scan every ELF binary for missing shared libraries BEFORE packaging.
+# Two-phase check to eliminate false positives from patchelf $ORIGIN RPATHs:
+#   Phase 1: ldd reports "not found" with LD_LIBRARY_PATH pointing at usr/lib
+#   Phase 2: confirm the lib genuinely isn't anywhere in the AppDir on disk
+#            (libs like libntfs-3g.so live in usr/lib/ntfs-3g/ subdirs, which
+#             ldd can't resolve via LD_LIBRARY_PATH but patchelf RPATH handles)
+log "Running library audit..."
+
+TRULY_MISSING=()
+while IFS= read -r binary; do
+    while IFS= read -r libname; do
+        # Phase 2: search the entire AppDir tree, not just usr/lib flat
+        if ! find "$APPDIR" -name "${libname}*" -print -quit 2>/dev/null | grep -q .; then
+            TRULY_MISSING+=("$libname")
+        fi
+    done < <(
+        LD_LIBRARY_PATH="$APPDIR/usr/lib" ldd "$binary" 2>/dev/null \
+        | grep "not found" \
+        | grep -oP '^\s+\K\S+(?= =>)'
+    )
+done < <(find "$APPDIR" -type f | xargs file 2>/dev/null | grep ELF | cut -d: -f1)
+
+# Deduplicate
+MISSING_UNIQUE=$(printf '%s\n' "${TRULY_MISSING[@]}" | sort -u | grep -v '^$')
+
+if [ -n "$MISSING_UNIQUE" ]; then
+    echo ""
+    warn "============================================================"
+    warn "  MISSING LIBRARIES DETECTED — AppImage may crash at runtime"
+    warn "  Add the corresponding RPM packages to ALL_PACKAGES in"
+    warn "  build.sh and rebuild."
+    warn ""
+    warn "  Missing libs:"
+    echo "$MISSING_UNIQUE" | while read -r lib; do
+        warn "    $lib"
+    done
+    warn "============================================================"
+    echo ""
+    err "Aborting: fix missing libraries before packaging."
+fi
+
+log "  Library audit passed — all dependencies bundled."
+
 # --- Package -----------------------------------------------------------------
 log "Packaging AppImage..."
 cd "$SCRIPTDIR"
-# APPIMAGE_EXTRACT_AND_RUN=1 lets appimagetool work without FUSE,
-# which is required inside Docker/Podman containers.
+# APPIMAGE_EXTRACT_AND_RUN=1 lets appimagetool run without FUSE (needed in Docker)
 ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$BUILDDIR/appimagetool" "$APPDIR" \
     "$BUILDDIR/WoeUSB-ng-${VERSION}-x86_64.AppImage"
 
