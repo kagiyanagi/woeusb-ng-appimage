@@ -135,12 +135,21 @@ ALL_PACKAGES=(
     libpng
     libjpeg-turbo
     pixman
+
+    # Required by wxPython's _core.so on non-SELinux hosts (Ubuntu, Arch, etc.)
+    # Without this: ImportError: libselinux.so.1: cannot open shared object file
+    libselinux
+    libxml2
+    mesa-libgallium
+    fuse3-libs
+    libimagequant
 )
 
 cd "$BUILDDIR/deps-rpms"
 
 dnf download --arch x86_64 --arch noarch \
     --skip-unavailable \
+    --disablerepo=fedora-cisco-openh264 \
     --destdir="$BUILDDIR/deps-rpms" \
     "${ALL_PACKAGES[@]}" || \
     warn "Some packages could not be downloaded (see above)"
@@ -202,7 +211,7 @@ fi
 
 # --- Bundle Python interpreter -----------------------------------------------
 log "Bundling Python interpreter..."
-PYTHON_BIN=$(readlink -f "$(which python3)")
+PYTHON_BIN=$(readlink -f "$(command -v python3)")
 PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 
 cp "$PYTHON_BIN" "$APPDIR/usr/bin/python3"
@@ -440,7 +449,9 @@ echo ""
 # --- Package -----------------------------------------------------------------
 log "Packaging AppImage..."
 cd "$SCRIPTDIR"
-ARCH=x86_64 "$BUILDDIR/appimagetool" "$APPDIR" \
+# APPIMAGE_EXTRACT_AND_RUN=1 lets appimagetool work without FUSE,
+# which is required inside Docker/Podman containers.
+ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$BUILDDIR/appimagetool" "$APPDIR" \
     "$BUILDDIR/WoeUSB-ng-${VERSION}-x86_64.AppImage"
 
 if [ $? -ne 0 ]; then
