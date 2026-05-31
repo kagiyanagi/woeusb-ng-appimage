@@ -51,14 +51,14 @@ Standard system utilities (mount, lsblk, grep, etc.) are expected from the host.
 ### Requirements
 
 - **Fedora** (or a Fedora toolbox/container) — the build script uses `dnf download` to fetch RPMs
-- Build tools: `git`, `wget`, `python3`, `python3-pip`, `patchelf`, `rpm-build`, `cpio`, `file`
+- Build tools: `git`, `wget`, `python3`, `python3-pip`, `patchelf`, `rpm-build`, `cpio`, `file`, `findutils`, `binutils`
 - `python3-wxpython4` installed on the build system (for bundling)
 
 ### Build
 
 ```bash
 # Install build deps (Fedora)
-sudo dnf install -y git wget python3 python3-pip python3-wxpython4 patchelf rpm-build cpio file
+sudo dnf install -y git wget python3 python3-pip python3-wxpython4 patchelf rpm-build cpio file findutils binutils
 
 # Build the AppImage (defaults to WoeUSB-ng v0.2.12)
 ./build.sh
@@ -76,7 +76,7 @@ You don't need Fedora installed. Use Docker to build from any Linux distro:
 ```bash
 # One-liner
 docker run --rm -v "$PWD":/build -w /build fedora:latest bash -c \
-  'dnf install -y git wget python3 python3-pip python3-wxpython4 patchelf rpm-build cpio file && ./build.sh 0.2.12'
+  'dnf install -y git wget python3 python3-pip python3-wxpython4 patchelf rpm-build cpio file findutils binutils && ./build.sh 0.2.12'
 
 # Copy the AppImage out of build/
 ls build/WoeUSB-ng-*-x86_64.AppImage
@@ -86,7 +86,7 @@ Or with Podman (rootless, common on Fedora/RHEL):
 
 ```bash
 podman run --rm -v "$PWD":/build:Z -w /build fedora:latest bash -c \
-  'dnf install -y git wget python3 python3-pip python3-wxpython4 patchelf rpm-build cpio file && ./build.sh 0.2.12'
+  'dnf install -y git wget python3 python3-pip python3-wxpython4 patchelf rpm-build cpio file findutils binutils && ./build.sh 0.2.12'
 ```
 
 ### Build with Fedora Toolbox
@@ -94,7 +94,7 @@ podman run --rm -v "$PWD":/build:Z -w /build fedora:latest bash -c \
 ```bash
 toolbox create woeusb-build
 toolbox enter woeusb-build
-sudo dnf install -y git wget python3 python3-pip python3-wxpython4 patchelf rpm-build cpio file
+sudo dnf install -y git wget python3 python3-pip python3-wxpython4 patchelf rpm-build cpio file findutils binutils
 ./build.sh 0.2.12
 ```
 
