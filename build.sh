@@ -8,14 +8,11 @@ set -uo pipefail
 # Builds a self-contained AppImage with wxPython GUI and all runtime deps
 ###############################################################################
 
-VERSION="${1:-0.2.12}"
-NO_CLEAN=0
-for arg in "$@"; do
-    [ "$arg" = "--no-clean" ] && NO_CLEAN=1
-done
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
 BUILDDIR="$SCRIPTDIR/build"
 APPDIR="$BUILDDIR/AppDir"
+SITE_PACKAGES="$APPDIR/usr/lib/python3/site-packages"
+DEFAULT_VERSION="0.2.12"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -26,18 +23,56 @@ log()  { echo -e "${GREEN}==> $1${NC}"; }
 warn() { echo -e "${YELLOW}==> WARNING: $1${NC}"; }
 err()  { echo -e "${RED}==> ERROR: $1${NC}"; exit 1; }
 
+usage() {
+    cat <<EOF
+Usage: $0 [version] [--no-clean]
+
+Build WoeUSB-ng v<version> into build/WoeUSB-ng-<version>-x86_64.AppImage.
+Defaults to version ${DEFAULT_VERSION}.
+EOF
+}
+
+VERSION="$DEFAULT_VERSION"
+VERSION_SET=0
+NO_CLEAN=0
+for arg in "$@"; do
+    case "$arg" in
+        --no-clean)
+            NO_CLEAN=1
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        -*)
+            err "Unknown option: $arg"
+            ;;
+        *)
+            if [ "$VERSION_SET" -eq 1 ]; then
+                err "Unexpected extra argument: $arg"
+            fi
+            VERSION="$arg"
+            VERSION_SET=1
+            ;;
+    esac
+done
+
 log "Building WoeUSB-ng AppImage v${VERSION}"
 
 # --- Preflight ---------------------------------------------------------------
 log "Checking build dependencies..."
 MISSING_BUILD=()
-for cmd in git wget python3 dnf rpm patchelf file cpio pip3; do
+for cmd in git wget python3 dnf rpm rpm2cpio patchelf file cpio pip3 strip ldd find xargs; do
     command -v "$cmd" &>/dev/null || MISSING_BUILD+=("$cmd")
 done
 if [ ${#MISSING_BUILD[@]} -ne 0 ]; then
     err "Missing build tools: ${MISSING_BUILD[*]}
 Install with:
-  sudo dnf install -y git wget python3 python3-pip patchelf rpm-build cpio file"
+  sudo dnf install -y git wget python3 python3-pip patchelf rpm-build cpio file findutils binutils"
+fi
+
+if ! dnf download --help &>/dev/null; then
+    err "'dnf download' is unavailable. Install dnf-plugins-core or use a Fedora image with download support."
 fi
 
 # --- Clean -------------------------------------------------------------------
@@ -48,7 +83,7 @@ if [ "$NO_CLEAN" -eq 1 ]; then
 else
     rm -rf "$BUILDDIR"
 fi
-mkdir -p "$BUILDDIR/deps-rpms"
+mkdir -p "$BUILDDIR/deps-rpms" || err "Failed to create build directory"
 
 # --- Clone WoeUSB-ng ---------------------------------------------------------
 log "Cloning WoeUSB-ng v${VERSION}..."
@@ -61,23 +96,22 @@ log "Downloading appimagetool..."
 wget -q -O "$BUILDDIR/appimagetool" \
     https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage || \
     err "Failed to download appimagetool"
-chmod +x "$BUILDDIR/appimagetool"
+chmod +x "$BUILDDIR/appimagetool" || err "Failed to make appimagetool executable"
 
 # --- Build AppDir skeleton ---------------------------------------------------
 log "Creating AppDir structure..."
-mkdir -p "$APPDIR"/usr/{bin,lib}
-mkdir -p "$APPDIR"/usr/share/{grub,applications,glib-2.0,locale}
-mkdir -p "$APPDIR"/usr/share/icons/hicolor/256x256/apps
-mkdir -p "$APPDIR"/etc/gtk-3.0
+mkdir -p "$APPDIR"/usr/{bin,lib} || err "Failed to create AppDir binaries"
+mkdir -p "$APPDIR"/usr/share/{grub,applications,glib-2.0,locale} || err "Failed to create AppDir shares"
+mkdir -p "$APPDIR"/usr/share/icons/hicolor/256x256/apps || err "Failed to create icon directory"
+mkdir -p "$APPDIR"/etc/gtk-3.0 || err "Failed to create GTK config directory"
 
 # --- Install WoeUSB-ng -------------------------------------------------------
 # WoeUSB-ng's setup.py has custom install commands that try to write to
 # /usr/local/bin during wheel build, breaking pip --target installs.
 # Since it's pure Python, just copy the package directly.
 log "Installing WoeUSB-ng Python package..."
-SITE_PACKAGES="$APPDIR/usr/lib/python3/site-packages"
-mkdir -p "$SITE_PACKAGES"
-cp -r "$BUILDDIR/WoeUSB-ng/WoeUSB" "$SITE_PACKAGES/WoeUSB" || \
+mkdir -p "$SITE_PACKAGES" || err "Failed to create Python site-packages"
+cp -a "$BUILDDIR/WoeUSB-ng/WoeUSB" "$SITE_PACKAGES/WoeUSB" || \
     err "Failed to copy WoeUSB-ng package"
 
 # Install termcolor (WoeUSB-ng dependency)
@@ -109,6 +143,7 @@ ALL_PACKAGES=(
 
     # GUI: wxPython + wxGTK + GTK3 stack
     python3-wxpython4
+    python3-termcolor
     gtk3
     glib2
     gdk-pixbuf2
@@ -160,10 +195,11 @@ ALL_PACKAGES=(
     device-mapper-libs
 )
 
-cd "$BUILDDIR/deps-rpms"
+cd "$BUILDDIR/deps-rpms" || err "Failed to enter RPM cache directory"
 
-if [ "$NO_CLEAN" -eq 1 ] && [ "$(ls -1 "$BUILDDIR/deps-rpms"/*.rpm 2>/dev/null | wc -l)" -gt 0 ]; then
-    log "Reusing $(ls -1 "$BUILDDIR/deps-rpms"/*.rpm | wc -l) cached RPMs (--no-clean)"
+CACHED_RPM_COUNT=$(find "$BUILDDIR/deps-rpms" -maxdepth 1 -type f -name "*.rpm" | wc -l)
+if [ "$NO_CLEAN" -eq 1 ] && [ "$CACHED_RPM_COUNT" -gt 0 ]; then
+    log "Reusing $CACHED_RPM_COUNT cached RPMs (--no-clean)"
 else
     dnf download --arch x86_64 --arch noarch \
         --skip-unavailable \
@@ -173,7 +209,7 @@ else
         warn "Some packages could not be downloaded (see above)"
 fi
 
-RPM_COUNT=$(ls -1 "$BUILDDIR/deps-rpms"/*.rpm 2>/dev/null | wc -l)
+RPM_COUNT=$(find "$BUILDDIR/deps-rpms" -maxdepth 1 -type f -name "*.rpm" | wc -l)
 log "Downloaded $RPM_COUNT RPMs total"
 
 if [ "$RPM_COUNT" -eq 0 ]; then
@@ -182,7 +218,7 @@ fi
 
 # --- Extract RPMs into AppDir ------------------------------------------------
 log "Extracting RPMs into AppDir..."
-cd "$APPDIR"
+cd "$APPDIR" || err "Failed to enter AppDir"
 for rpm_file in "$BUILDDIR/deps-rpms"/*.rpm; do
     rpm2cpio "$rpm_file" | cpio -idm --quiet 2>/dev/null || true
 done
@@ -232,18 +268,19 @@ fi
 log "Bundling Python interpreter..."
 PYTHON_BIN=$(readlink -f "$(command -v python3)")
 PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+PYTHONPATH_BUNDLED="$SITE_PACKAGES:$APPDIR/usr/lib/python${PYTHON_VERSION}:$APPDIR/usr/lib/python${PYTHON_VERSION}/lib-dynload"
 
-cp "$PYTHON_BIN" "$APPDIR/usr/bin/python3"
+cp "$PYTHON_BIN" "$APPDIR/usr/bin/python3" || err "Failed to copy Python interpreter"
 
 # Python stdlib
 PYTHON_LIBDIR=$(python3 -c "import sysconfig; print(sysconfig.get_path('stdlib'))")
-mkdir -p "$APPDIR/usr/lib/python${PYTHON_VERSION}"
-cp -r "$PYTHON_LIBDIR"/* "$APPDIR/usr/lib/python${PYTHON_VERSION}/" 2>/dev/null || true
+mkdir -p "$APPDIR/usr/lib/python${PYTHON_VERSION}" || err "Failed to create Python stdlib directory"
+cp -a "$PYTHON_LIBDIR"/* "$APPDIR/usr/lib/python${PYTHON_VERSION}/" 2>/dev/null || true
 
 # Python lib-dynload
 PYTHON_DYNLOAD=$(python3 -c "import sysconfig; print(sysconfig.get_path('platstdlib'))")
 if [ -d "$PYTHON_DYNLOAD/lib-dynload" ]; then
-    cp -r "$PYTHON_DYNLOAD/lib-dynload" "$APPDIR/usr/lib/python${PYTHON_VERSION}/" 2>/dev/null || true
+    cp -a "$PYTHON_DYNLOAD/lib-dynload" "$APPDIR/usr/lib/python${PYTHON_VERSION}/" 2>/dev/null || true
 fi
 
 # libpython shared library
@@ -252,34 +289,61 @@ for searchdir in /usr/lib /usr/lib64; do
         -exec cp -an {} "$APPDIR/usr/lib/" \; 2>/dev/null || true
 done
 
-patchelf --set-rpath '$ORIGIN/../lib' "$APPDIR/usr/bin/python3" 2>/dev/null || true
+patchelf --set-rpath "\$ORIGIN/../lib" "$APPDIR/usr/bin/python3" 2>/dev/null || true
 
 # --- Bundle wxPython ---------------------------------------------------------
 log "Bundling wxPython..."
+
+copy_python_tree_from_appdir() {
+    local module_name="$1"
+    local destination="$SITE_PACKAGES/$module_name"
+    local source_path
+
+    [ -e "$destination" ] && return 0
+
+    source_path=$(find "$APPDIR" -path "*/site-packages/$module_name" -type d -print -quit 2>/dev/null || true)
+    if [ -n "$source_path" ]; then
+        log "  Copying $module_name from extracted RPM: $source_path"
+        mkdir -p "$SITE_PACKAGES" || err "Failed to create Python site-packages"
+        cp -a "$source_path" "$destination" || err "Failed to copy $module_name from extracted RPMs"
+    fi
+}
+
+verify_python_import() {
+    local module_name="$1"
+    local failure_output
+
+    if ! failure_output=$(PYTHONHOME="$APPDIR/usr" \
+        PYTHONPATH="$PYTHONPATH_BUNDLED" \
+        LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+        "$APPDIR/usr/bin/python3" -c "import ${module_name}" 2>&1); then
+        echo "$failure_output" >&2
+        err "Bundled Python cannot import ${module_name}. The AppImage would fail at runtime."
+    fi
+}
 
 # Primary: copy from system install
 SYSTEM_WX=$(python3 -c "import wx; print(wx.__path__[0])" 2>/dev/null || echo "")
 if [ -n "$SYSTEM_WX" ] && [ -d "$SYSTEM_WX" ]; then
     log "  Copying system wxPython from $SYSTEM_WX"
-    mkdir -p "$APPDIR/usr/lib/python3/site-packages"
-    cp -r "$SYSTEM_WX" "$APPDIR/usr/lib/python3/site-packages/wx"
+    mkdir -p "$SITE_PACKAGES" || err "Failed to create Python site-packages"
+    cp -a "$SYSTEM_WX" "$SITE_PACKAGES/wx" || err "Failed to copy system wxPython"
     # Copy dist-info/egg-info if present
     WX_DIST=$(find "$(dirname "$SYSTEM_WX")" -maxdepth 1 -name "wx*info" -type d 2>/dev/null | head -1)
     if [ -n "$WX_DIST" ]; then
-        cp -r "$WX_DIST" "$APPDIR/usr/lib/python3/site-packages/" 2>/dev/null || true
+        cp -a "$WX_DIST" "$SITE_PACKAGES/" 2>/dev/null || true
     fi
 else
     # Fallback: extract from the downloaded RPM
     warn "System wxPython not found, checking extracted RPMs..."
-    RPM_WX=$(find "$APPDIR" -path "*/site-packages/wx" -type d 2>/dev/null | head -1)
-    if [ -n "$RPM_WX" ] && [ "$RPM_WX" != "$APPDIR/usr/lib/python3/site-packages/wx" ]; then
-        mkdir -p "$APPDIR/usr/lib/python3/site-packages"
-        cp -r "$RPM_WX" "$APPDIR/usr/lib/python3/site-packages/wx"
-    fi
-    if [ ! -d "$APPDIR/usr/lib/python3/site-packages/wx" ]; then
-        warn "wxPython not available! Install it first: sudo dnf install python3-wxpython4"
-    fi
+    copy_python_tree_from_appdir wx
 fi
+
+if [ ! -d "$SITE_PACKAGES/wx" ]; then
+    err "wxPython not available. Install python3-wxpython4 in the build environment or build in the documented Fedora container."
+fi
+
+copy_python_tree_from_appdir termcolor
 
 # Copy wxGTK native .so files
 for searchdir in /usr/lib /usr/lib64; do
@@ -297,7 +361,7 @@ if [ -n "$GDK_PIXBUF_QUERY" ]; then
     mkdir -p "$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0"
     LOADERS_DIR="$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"
     if [ -d "$LOADERS_DIR" ] && ls "$LOADERS_DIR"/*.so 1>/dev/null 2>&1; then
-        LD_LIBRARY_PATH="$APPDIR/usr/lib:${LD_LIBRARY_PATH:-}" \
+        LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
             "$GDK_PIXBUF_QUERY" "$LOADERS_DIR"/*.so \
             > "$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache" 2>/dev/null || \
             warn "Could not generate pixbuf loader cache"
@@ -308,12 +372,12 @@ fi
 GLIB_COMPILE=$(find "$APPDIR" -name "glib-compile-schemas" -type f 2>/dev/null | head -1)
 if [ -n "$GLIB_COMPILE" ]; then
     chmod +x "$GLIB_COMPILE"
-    for schema_dir in $(find "$APPDIR" -name "glib-2.0" -type d 2>/dev/null); do
+    while IFS= read -r schema_dir; do
         if [ -d "$schema_dir/schemas" ]; then
-            LD_LIBRARY_PATH="$APPDIR/usr/lib:${LD_LIBRARY_PATH:-}" \
+            LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
                 "$GLIB_COMPILE" "$schema_dir/schemas" 2>/dev/null || true
         fi
-    done
+    done < <(find "$APPDIR" -name "glib-2.0" -type d 2>/dev/null)
 fi
 
 # GTK settings
@@ -336,7 +400,7 @@ for binary in "$APPDIR/usr/bin"/*; do
     [ -f "$binary" ] || continue
     [ -x "$binary" ] || continue
     if file "$binary" 2>/dev/null | grep -q "ELF"; then
-        if patchelf --set-rpath '$ORIGIN/../lib' "$binary" 2>/dev/null; then
+        if patchelf --set-rpath "\$ORIGIN/../lib" "$binary" 2>/dev/null; then
             PATCH_COUNT=$((PATCH_COUNT + 1))
         else
             PATCH_FAIL=$((PATCH_FAIL + 1))
@@ -348,7 +412,7 @@ done
 for lib in "$APPDIR/usr/lib"/*.so "$APPDIR/usr/lib"/*.so.*; do
     [ -f "$lib" ] || continue
     if file "$lib" 2>/dev/null | grep -q "ELF"; then
-        if patchelf --set-rpath '$ORIGIN' "$lib" 2>/dev/null; then
+        if patchelf --set-rpath "\$ORIGIN" "$lib" 2>/dev/null; then
             PATCH_COUNT=$((PATCH_COUNT + 1))
         else
             PATCH_FAIL=$((PATCH_FAIL + 1))
@@ -360,18 +424,19 @@ log "  Patched $PATCH_COUNT ELF files ($PATCH_FAIL skipped)"
 
 # --- Copy resources ----------------------------------------------------------
 log "Installing launcher and metadata..."
-cp "$SCRIPTDIR/resources/AppRun" "$APPDIR/AppRun"
-cp "$SCRIPTDIR/resources/woeusb-ng.desktop" "$APPDIR/woeusb-ng.desktop"
-cp "$SCRIPTDIR/resources/woeusb-ng.desktop" "$APPDIR/usr/share/applications/woeusb-ng.desktop"
-chmod +x "$APPDIR/AppRun"
+cp "$SCRIPTDIR/resources/AppRun" "$APPDIR/AppRun" || err "Failed to copy AppRun"
+cp "$SCRIPTDIR/resources/woeusb-ng.desktop" "$APPDIR/woeusb-ng.desktop" || err "Failed to copy desktop file"
+cp "$SCRIPTDIR/resources/woeusb-ng.desktop" "$APPDIR/usr/share/applications/woeusb-ng.desktop" || \
+    err "Failed to install desktop file"
+chmod +x "$APPDIR/AppRun" || err "Failed to make AppRun executable"
 
 # Icon
 if [ -f "$BUILDDIR/WoeUSB-ng/WoeUSB/data/woeusb-logo.png" ]; then
     cp "$BUILDDIR/WoeUSB-ng/WoeUSB/data/woeusb-logo.png" \
-        "$APPDIR/usr/share/icons/hicolor/256x256/apps/woeusb-ng.png"
+        "$APPDIR/usr/share/icons/hicolor/256x256/apps/woeusb-ng.png" || err "Failed to copy upstream icon"
 elif [ -f "$SCRIPTDIR/resources/woeusb-ng.png" ]; then
     cp "$SCRIPTDIR/resources/woeusb-ng.png" \
-        "$APPDIR/usr/share/icons/hicolor/256x256/apps/woeusb-ng.png"
+        "$APPDIR/usr/share/icons/hicolor/256x256/apps/woeusb-ng.png" || err "Failed to copy local icon"
 else
     warn "No icon found -- add resources/woeusb-ng.png for best results"
 fi
@@ -402,9 +467,9 @@ find "$APPDIR/usr/share/locale" -mindepth 1 -maxdepth 1 ! -name "en*" \
 # Strip debug symbols
 log "Stripping debug symbols..."
 STRIP_COUNT=0
-for f in $(find "$APPDIR" -type f \( -name "*.so" -o -name "*.so.*" \) 2>/dev/null); do
+while IFS= read -r -d '' f; do
     strip --strip-unneeded "$f" 2>/dev/null && STRIP_COUNT=$((STRIP_COUNT + 1))
-done
+done < <(find "$APPDIR" -type f \( -name "*.so" -o -name "*.so.*" \) -print0 2>/dev/null)
 for f in "$APPDIR/usr/bin"/*; do
     [ -f "$f" ] && [ -x "$f" ] || continue
     if file "$f" 2>/dev/null | grep -q "ELF"; then
@@ -413,27 +478,56 @@ for f in "$APPDIR/usr/bin"/*; do
 done
 log "  Stripped $STRIP_COUNT files"
 
+log "Checking bundled Python imports..."
+verify_python_import "termcolor"
+verify_python_import "WoeUSB.core"
+verify_python_import "wx"
+verify_python_import "wx.adv"
+log "  Bundled Python imports passed"
+
 # --- Verification ------------------------------------------------------------
 echo ""
 log "========== VERIFICATION =========="
 
-log "System tools:"
-for tool in parted grub-install mkfs.fat mkntfs 7z python3; do
-    if [ -f "$APPDIR/usr/bin/$tool" ]; then
-        echo "  [OK]      $tool"
-    else
+check_appdir_tool() {
+    local label="$1"
+    shift
+    local tool
+    local alt
+
+    for tool in "$@"; do
+        if [ -f "$APPDIR/usr/bin/$tool" ]; then
+            if [ "$label" = "$tool" ]; then
+                echo "  [OK]      $label"
+            else
+                echo "  [OK]      $label (as $tool)"
+            fi
+            return 0
+        fi
+    done
+
+    for tool in "$@"; do
         alt=$(find "$APPDIR/usr/bin" -name "${tool}*" -print -quit 2>/dev/null)
         if [ -n "$alt" ]; then
-            echo "  [OK]      $tool (as $(basename "$alt"))"
-        else
-            echo "  [MISSING] $tool"
+            echo "  [OK]      $label (as $(basename "$alt"))"
+            return 0
         fi
-    fi
-done
+    done
+
+    echo "  [MISSING] $label"
+}
+
+log "System tools:"
+check_appdir_tool parted parted
+check_appdir_tool grub-install grub-install grub2-install
+check_appdir_tool mkfs.fat mkfs.fat
+check_appdir_tool mkntfs mkntfs
+check_appdir_tool 7z 7z 7za 7zr
+check_appdir_tool python3 python3
 
 log "GRUB modules:"
 if find "$APPDIR/usr/lib/grub" -name "*.mod" -print -quit 2>/dev/null | grep -q .; then
-    GRUB_ARCH=$(ls "$APPDIR/usr/lib/grub/" 2>/dev/null | head -3 | tr '\n' ' ')
+    GRUB_ARCH=$(find "$APPDIR/usr/lib/grub" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | head -3 | tr '\n' ' ')
     echo "  [OK]      GRUB modules (${GRUB_ARCH})"
 else
     echo "  [MISSING] GRUB modules"
@@ -486,7 +580,7 @@ while IFS= read -r binary; do
         | grep "not found" \
         | grep -oP '^\s+\K\S+(?= =>)'
     )
-done < <(find "$APPDIR" -type f | xargs file 2>/dev/null | grep ELF | cut -d: -f1)
+done < <(find "$APPDIR" -type f -print0 | xargs -0 file 2>/dev/null | grep ELF | cut -d: -f1)
 
 # Deduplicate
 MISSING_UNIQUE=$(printf '%s\n' "${TRULY_MISSING[@]}" | sort -u | grep -v '^$')
@@ -511,12 +605,10 @@ log "  Library audit passed — all dependencies bundled."
 
 # --- Package -----------------------------------------------------------------
 log "Packaging AppImage..."
-cd "$SCRIPTDIR"
+cd "$SCRIPTDIR" || err "Failed to return to source directory"
 # APPIMAGE_EXTRACT_AND_RUN=1 lets appimagetool run without FUSE (needed in Docker)
-ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$BUILDDIR/appimagetool" "$APPDIR" \
-    "$BUILDDIR/WoeUSB-ng-${VERSION}-x86_64.AppImage"
-
-if [ $? -ne 0 ]; then
+if ! ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$BUILDDIR/appimagetool" "$APPDIR" \
+    "$BUILDDIR/WoeUSB-ng-${VERSION}-x86_64.AppImage"; then
     err "appimagetool failed!"
 fi
 
