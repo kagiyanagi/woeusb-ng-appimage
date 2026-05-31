@@ -588,7 +588,7 @@ MISSING_UNIQUE=$(printf '%s\n' "${TRULY_MISSING[@]}" | sort -u | grep -v '^$')
 if [ -n "$MISSING_UNIQUE" ]; then
     echo ""
     warn "============================================================"
-    warn "  MISSING LIBRARIES DETECTED — AppImage may crash at runtime"
+    warn "  MISSING LIBRARIES DETECTED - AppImage may crash at runtime"
     warn "  Add the corresponding RPM packages to ALL_PACKAGES in"
     warn "  build.sh and rebuild."
     warn ""
@@ -601,7 +601,7 @@ if [ -n "$MISSING_UNIQUE" ]; then
     err "Aborting: fix missing libraries before packaging."
 fi
 
-log "  Library audit passed — all dependencies bundled."
+log "  Library audit passed - all dependencies bundled."
 
 # --- Package -----------------------------------------------------------------
 log "Packaging AppImage..."

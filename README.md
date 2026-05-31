@@ -1,6 +1,6 @@
 # WoeUSB-ng AppImage
 
-Portable, self-contained [AppImage](https://appimage.org/) of [WoeUSB-ng](https://github.com/WoeUSB/WoeUSB-ng) — create bootable Windows USB drives from ISO images on any Linux distro.
+Portable, self-contained [AppImage](https://appimage.org/) of [WoeUSB-ng](https://github.com/WoeUSB/WoeUSB-ng) - create bootable Windows USB drives from ISO images on any Linux distro.
 
 No installation required. Download, make executable, run.
 
@@ -39,10 +39,10 @@ This works without root.
 
 The AppImage is self-contained. It bundles:
 
-- **WoeUSB-ng** — the Python application
+- **WoeUSB-ng** - the Python application
 - **Python 3** interpreter and stdlib
-- **wxPython + GTK3** — full GUI stack (wxGTK, Pango, Cairo, GDK, etc.)
-- **System tools** — parted, grub2, ntfs-3g (mkntfs), dosfstools (mkfs.fat), p7zip
+- **wxPython + GTK3** - full GUI stack (wxGTK, Pango, Cairo, GDK, etc.)
+- **System tools** - parted, grub2, ntfs-3g (mkntfs), dosfstools (mkfs.fat), p7zip
 
 Standard system utilities (mount, lsblk, grep, etc.) are expected from the host.
 
@@ -50,7 +50,7 @@ Standard system utilities (mount, lsblk, grep, etc.) are expected from the host.
 
 ### Requirements
 
-- **Fedora** (or a Fedora toolbox/container) — the build script uses `dnf download` to fetch RPMs
+- **Fedora** (or a Fedora toolbox/container) - the build script uses `dnf download` to fetch RPMs
 - Build tools: `git`, `wget`, `python3`, `python3-pip`, `patchelf`, `rpm-build`, `cpio`, `file`, `findutils`, `binutils`
 - `python3-wxpython4` installed on the build system (for bundling)
 
