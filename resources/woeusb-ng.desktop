@@ -6,6 +6,6 @@ Exec=WoeUSB-ng
 Icon=woeusb-ng
 Terminal=false
 Type=Application
-Categories=Utility;System;
+Categories=Utility;
 Keywords=windows;usb;bootable;iso;installer;
 StartupNotify=true
