@@ -6,17 +6,28 @@
 
 APPDIR=$(dirname "$(readlink -f "$0")")
 
-# --- Library and binary paths ------------------------------------------------
-export LD_LIBRARY_PATH="$APPDIR/usr/lib64:$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export PATH="$APPDIR/usr/bin:$PATH"
+# --- Binary paths ------------------------------------------------------------
+# Bundled binaries find their libraries through RPATH (see build.sh), so no
+# LD_LIBRARY_PATH: it would leak into the host tools WoeUSB-ng runs.
+export PATH="$APPDIR/usr/sbin:$APPDIR/usr/bin:$PATH"
 
-# --- Python ------------------------------------------------------------------
-export PYTHONHOME="$APPDIR/usr"
+# The bundled OpenSSL looks for CAs where EL9 keeps them; use the host's.
+if [ -z "${SSL_CERT_FILE:-}" ]; then
+    for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/ca-bundle.pem; do
+        [ -f "$f" ] && export SSL_CERT_FILE="$f" && break
+    done
+fi
 
 # --- GTK / GDK / Pango -------------------------------------------------------
 export GTK_DATA_PREFIX="$APPDIR/usr"
 export GTK_THEME=Adwaita
 export GTK3_MODULES=""
+
+# Keep the host's GTK, GIO and gdk-pixbuf plugins out of the process: they are
+# built against the host's newer GTK/GLib and crash ours.
+export GTK_EXE_PREFIX="$APPDIR/usr"
+export GIO_MODULE_DIR="$APPDIR/usr/lib64/gio/modules"
+export GDK_PIXBUF_MODULE_FILE="$APPDIR/usr/lib64/gdk-pixbuf-2.0/2.10.0/loaders.cache"
 
 # Pango
 export PANGO_LIBDIR="$APPDIR/usr/lib"
@@ -33,14 +44,17 @@ export GSETTINGS_BACKEND=memory
 export XDG_DATA_DIRS="$APPDIR/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 
 # --- Launch helpers -----------------------------------------------------------
-py() { exec "$APPDIR/usr/bin/python3" -W ignore::SyntaxWarning -c "$@"; }
+# -I: find the stdlib next to the binary and ignore PYTHON* env vars and
+# ~/.local, so nothing from the host's Python can leak in.
+PYTHON=("$APPDIR/usr/bin/python3" -I -W ignore::SyntaxWarning)
+py() { exec "${PYTHON[@]}" -c "$@"; }
 run_cli()   { py 'import sys; sys.argv[0] = "woeusb"; from WoeUSB import core; core.run()' "$@"; }
 run_about() { py 'from WoeUSB import core; core.print_application_info()'; }
 
 check_wx() {
     local wx_import_error
 
-    if ! wx_import_error=$("$APPDIR/usr/bin/python3" -c "import wx; import wx.adv" 2>&1); then
+    if ! wx_import_error=$("${PYTHON[@]}" -c "import wx; import wx.adv" 2>&1); then
         echo "ERROR: Failed to import wxPython. The AppImage may be corrupted." >&2
         echo "$wx_import_error" >&2
         echo "       Try re-downloading the AppImage or report this build as broken." >&2

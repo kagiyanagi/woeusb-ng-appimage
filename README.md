@@ -43,30 +43,42 @@ The AppImage is self-contained. It bundles:
 - **Python 3** interpreter and stdlib
 - **wxPython + GTK3** - full GUI stack (wxGTK, Pango, Cairo, GDK, etc.)
 - **System tools** - parted, grub2, ntfs-3g (mkntfs), dosfstools (mkfs.fat), p7zip
+- **Every library they link** except glibc and the GCC runtime
 
-Standard system utilities (mount, lsblk, grep, etc.) are expected from the host.
+It runs on any x86_64 distro with glibc 2.34 or newer: RHEL/AlmaLinux/Rocky 9+, Debian 12+, Ubuntu 22.04+, openSUSE Leap 15.6+ and Tumbleweed, Fedora, Arch. Standard system utilities (mount, lsblk, grep, etc.), fonts and the MIME database are expected from the host.
 
 ## Building from source
 
-The build script fetches Fedora RPMs with `dnf download`, so it runs in a Fedora container on any distro:
+The build script bundles AlmaLinux 9 + EPEL RPMs fetched with `dnf download`, so it runs in an AlmaLinux 9 container on any distro:
 
 ```bash
-podman run --rm -v "$PWD":/build:Z -w /build fedora:latest bash -c \
-  'dnf install -y git cpio file && ./build.sh'
+podman run --rm -v "$PWD":/build:Z -w /build almalinux:9 bash -c \
+  'dnf install -y epel-release && dnf install -y dnf-plugins-core git cpio file patchelf && ./build.sh'
 ```
 
-`docker run` takes the same arguments. On Fedora or in a toolbox you can run `sudo dnf install -y git cpio file && ./build.sh` directly, but a clean container is safer: the library audit falls back to the build machine's own libraries, so a desktop install can hide libraries missing from the bundle.
+`docker run` takes the same arguments. Build on EL9, not something newer: glibc isn't bundled, so the build's glibc is the oldest one the AppImage runs on, and the build fails if any binary needs a newer one.
 
 `./build.sh` builds WoeUSB-ng v0.2.12. Pass a version (`./build.sh 0.2.12`) to build another `v<version>` tag from the [WoeUSB-ng repo](https://github.com/WoeUSB/WoeUSB-ng/tags). The AppImage lands in `build/WoeUSB-ng-<version>-x86_64.AppImage`.
 
 ### How the build works
 
 1. Clones WoeUSB-ng at the specified git tag
-2. Downloads runtime dependency RPMs from Fedora repos (single batched `dnf download`), including Python and wxPython
+2. Downloads runtime dependency RPMs from AlmaLinux 9 and EPEL (single batched `dnf download`), including Python and wxPython
 3. Extracts the RPMs into an AppDir and copies WoeUSB-ng into the bundled Python's site-packages
-4. Compiles GLib schemas and checks that the bundled Python can import WoeUSB-ng and wxPython
-5. Audits every ELF file for missing libraries
-6. Packages everything into an AppImage using appimagetool
+4. Points every ELF file's RPATH at the bundled libraries, so nothing leaks into host tools through `LD_LIBRARY_PATH`
+5. Audits every ELF file: all libraries except glibc and the GCC runtime must resolve inside the AppDir, and nothing may need a glibc newer than 2.34
+6. Checks that the bundled Python imports WoeUSB-ng and wxPython from the AppDir, not the build host
+7. Packages everything into an AppImage using appimagetool
+
+### Testing
+
+The build machine has its own libraries and Python, which can hide what a user's machine lacks, so test the AppImage on other distros:
+
+```bash
+./test.sh build/WoeUSB-ng-*-x86_64.AppImage docker.io/library/debian:13 docker.io/opensuse/leap:15.6
+```
+
+For each image it checks that the CLI starts, that every bundled ELF file resolves against that distro's own libraries, and that the GUI opens its window on a virtual X display. It needs podman or docker; the CI workflow runs it on nine distros.
 
 ## License
 

@@ -9,7 +9,6 @@ set -uo pipefail
 SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
 BUILDDIR="$SCRIPTDIR/build"
 APPDIR="$BUILDDIR/AppDir"
-LIBPATH="$APPDIR/usr/lib64:$APPDIR/usr/lib"
 VERSION="${1:-0.2.12}"
 
 RED='\033[0;31m'
@@ -26,13 +25,13 @@ log "Building WoeUSB-ng AppImage v${VERSION}"
 # --- Preflight ---------------------------------------------------------------
 log "Checking build dependencies..."
 MISSING_BUILD=()
-for cmd in git curl dnf rpm2cpio cpio file ldd find xargs; do
+for cmd in git curl dnf rpm2cpio cpio file patchelf ldd find xargs; do
     command -v "$cmd" &>/dev/null || MISSING_BUILD+=("$cmd")
 done
 if [ ${#MISSING_BUILD[@]} -ne 0 ]; then
     err "Missing build tools: ${MISSING_BUILD[*]}
 Install with:
-  sudo dnf install -y git cpio file"
+  dnf install -y epel-release && dnf install -y dnf-plugins-core git cpio file patchelf"
 fi
 
 # --- Clean -------------------------------------------------------------------
@@ -58,10 +57,11 @@ mkdir -p "$APPDIR"/usr/share/{applications,icons/hicolor/256x256/apps} || \
     err "Failed to create AppDir structure"
 
 # --- Download runtime dependency RPMs ----------------------------------------
+# Packages come from AlmaLinux 9 + EPEL: glibc isn't bundled, so its 2.34 is
+# the oldest glibc the AppImage runs on (checked by the audit below). A newer
+# base raises that floor: Fedora's broke AlmaLinux 9 and openSUSE Leap.
 # All packages in a single dnf download call for speed (one repo metadata load).
-# No --resolve: dependency resolution fails in toolbox/container environments
-# due to systemd-standalone-tmpfiles conflicts. We list all needed packages
-# explicitly instead.
+# No --resolve: we list all needed packages explicitly instead.
 log "Downloading runtime dependency RPMs..."
 
 ALL_PACKAGES=(
@@ -89,6 +89,8 @@ ALL_PACKAGES=(
     gtk3
     glib2
     gdk-pixbuf2
+    # SVG loader for GTK's theme assets and symbolic icons (PNG/JPEG are built in)
+    librsvg2
     pango
     cairo
     at-spi2-core
@@ -126,10 +128,9 @@ ALL_PACKAGES=(
     libxml2
     # parted + all grub2 tools link libdevmapper.so.1.02
     device-mapper-libs
-    # Linked by the stack above but missing from a bare Fedora container
+    # Linked by the stack above
     cairo-gobject
     expat
-    glycin-libs
     graphite2
     jbigkit-libs
     json-glib
@@ -141,29 +142,63 @@ ALL_PACKAGES=(
     libXtst
     libcloudproviders
     libdatrie
-    liblerc
     libmspack
     libseccomp
     libsecret
     libthai
     libtiff
-    libtinysparql
     libwebp
     libxcb
     lzo
-    mpdecimal
     pcre2-utf32
-    sdl2-compat
-    # sdl2-compat dlopens SDL3, so the library audit can't see it
-    SDL3
+    SDL2
+    # freetype links brotli
+    libbrotli
+    # GTK's file chooser search links libtracker-sparql, which links ICU
+    libtracker-sparql
+    libicu
+    libstemmer
+    # Base libraries the build container has but a user's machine may not
+    # (the audit only lets glibc and the GCC runtime come from the host)
+    bzip2-libs
+    gdbm-libs
+    gnutls
+    keyutils-libs
+    krb5-libs
+    libblkid
+    libcap
+    libcom_err
+    libcurl-minimal
+    libffi
+    libgcrypt
+    libgpg-error
+    libidn2
+    libmount
+    libnghttp2
+    libtasn1
+    libunistring
+    libuuid
+    libverto
+    libxcrypt
+    libzstd
+    lz4-libs
+    ncurses-libs
+    nettle
+    openssl-libs
+    p11-kit
+    pcre
+    pcre2
+    readline
+    sqlite-libs
+    systemd-libs
+    xz-libs
+    zlib
 )
 
 dnf download --arch x86_64 --arch noarch \
-    --skip-unavailable \
-    --disablerepo=fedora-cisco-openh264 \
     --destdir="$BUILDDIR/deps-rpms" \
     "${ALL_PACKAGES[@]}" || \
-    warn "Some packages could not be downloaded (see above)"
+    err "Failed to download RPMs (see above). Build in almalinux:9 with EPEL, see README."
 
 RPM_COUNT=$(find "$BUILDDIR/deps-rpms" -maxdepth 1 -type f -name "*.rpm" | wc -l)
 log "Downloaded $RPM_COUNT RPMs total"
@@ -192,20 +227,19 @@ cp -a "$BUILDDIR/WoeUSB-ng/WoeUSB" "$SITE_PACKAGES/WoeUSB" || \
 # --- GRUB --------------------------------------------------------------------
 # grub2-install only reads modules from its compiled-in /usr/lib/grub, so wrap
 # it to use the bundled i386-pc ones (the only target WoeUSB-ng installs).
-mv "$APPDIR/usr/bin/grub2-install" "$APPDIR/usr/libexec/grub2-install" || \
+mv "$APPDIR/usr/sbin/grub2-install" "$APPDIR/usr/libexec/grub2-install" || \
     err "grub2-install missing from the extracted RPMs"
-cat > "$APPDIR/usr/bin/grub2-install" <<'EOF'
+cat > "$APPDIR/usr/sbin/grub2-install" <<'EOF'
 #!/bin/sh
 usr=${0%/*}/..
 pkgdatadir="$usr/share/grub" exec "$usr/libexec/grub2-install" \
     --directory="$usr/lib/grub/i386-pc" "$@"
 EOF
-chmod +x "$APPDIR/usr/bin/grub2-install" || err "Failed to make grub2-install wrapper executable"
+chmod +x "$APPDIR/usr/sbin/grub2-install" || err "Failed to make grub2-install wrapper executable"
 
-# --- GLib schemas ------------------------------------------------------------
-log "Compiling GLib schemas..."
-LD_LIBRARY_PATH="$LIBPATH" "$APPDIR/usr/bin/glib-compile-schemas" \
-    "$APPDIR/usr/share/glib-2.0/schemas" 2>/dev/null || warn "Could not compile GLib schemas"
+# p7zip's 7z/7za are scripts that exec /usr/libexec/p7zip on the host.
+sed -i 's|"/usr/libexec/|"${0%/*}/../libexec/|' "$APPDIR"/usr/bin/7z "$APPDIR"/usr/bin/7za || \
+    err "Failed to relocate the 7z wrappers"
 
 # --- Copy resources ----------------------------------------------------------
 log "Installing launcher and metadata..."
@@ -234,53 +268,76 @@ rm -rf "$APPDIR/usr/share/doc" \
        2>/dev/null || true
 
 # Plugins whose dependencies aren't bundled and that WoeUSB-ng never uses:
-# GTK print backends (cups), tinysparql's ICU/libsoup modules (GTK's file
-# chooser only talks to LocalSearch over D-Bus) and wx.glcanvas (host libGL).
+# GTK print backends (cups), tracker's libsoup module (GTK's file chooser
+# only talks to the tracker daemon over D-Bus) and wx.glcanvas (host libGL).
 rm -rf "$APPDIR/usr/lib64/gtk-3.0/3.0.0/printbackends" \
-       "$APPDIR/usr/lib64/tinysparql-3.0" \
+       "$APPDIR/usr/lib64/tracker-3.0" \
        "$APPDIR"/usr/lib64/python3.*/site-packages/wx/_glcanvas.*.so
 
 # Remove non-English locales
 find "$APPDIR/usr/share/locale" -mindepth 1 -maxdepth 1 ! -name "en*" \
     -exec rm -rf {} \; 2>/dev/null || true
 
+# gdk-pixbuf's loaders.cache holds absolute paths, which change with the mount
+# point, so the loader moves next to the libraries and is listed by bare name
+# below: dlopen then finds it through libgmodule's RPATH.
+mv "$APPDIR"/usr/lib64/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-svg.so "$APPDIR/usr/lib64/" || \
+    err "SVG pixbuf loader missing from the extracted RPMs"
+
+# --- RPATH -------------------------------------------------------------------
+# Point every bundled ELF at usr/lib64 instead of having AppRun export
+# LD_LIBRARY_PATH, which leaked the bundled libs into the host tools WoeUSB-ng
+# runs (mount, lsblk, grep...) and broke those needing newer versions.
+log "Setting RPATHs..."
+mapfile -t ELF_FILES < <(find "$APPDIR" -type f -print0 | xargs -0 file 2>/dev/null \
+    | grep -E 'ELF.*dynamically linked' | cut -d: -f1)
+for f in "${ELF_FILES[@]}"; do
+    patchelf --set-rpath "\$ORIGIN/$(realpath --relative-to="${f%/*}" "$APPDIR/usr/lib64")" "$f" || \
+        err "patchelf failed on $f"
+done
+
+log "Compiling GLib schemas..."
+"$APPDIR/usr/bin/glib-compile-schemas" "$APPDIR/usr/share/glib-2.0/schemas" || \
+    err "Could not compile GLib schemas"
+
+PIXBUF_CACHE="$APPDIR/usr/lib64/gdk-pixbuf-2.0/2.10.0/loaders.cache"
+"$APPDIR/usr/bin/gdk-pixbuf-query-loaders-64" "$APPDIR/usr/lib64/libpixbufloader-svg.so" \
+    | sed "s|\"$APPDIR/usr/lib64/|\"|" > "$PIXBUF_CACHE"
+grep -q '^"libpixbufloader-svg.so"$' "$PIXBUF_CACHE" || err "Could not register the SVG pixbuf loader"
+
+# --- Automated ldd audit -----------------------------------------------------
+# Everything must resolve inside the AppDir except glibc and the GCC runtime,
+# which every distro ships. Anything else the build host happens to have is
+# not on every user's machine (bare Debian 13 lacks libcurl, libffi, PCRE1...).
+log "Running library audit..."
+HOST_LIBS='^(ld-linux-x86-64|libc|libm|libdl|libpthread|librt|libresolv|libutil|libanl|libmvec|libstdc\+\+|libgcc_s)\.so'
+NOT_BUNDLED=$(printf '%s\0' "${ELF_FILES[@]}" | xargs -0 ldd 2>/dev/null \
+    | awk -v dir="$APPDIR/" '/=>/ && index($3, dir) != 1 {print $1}' | grep -vE "$HOST_LIBS" | sort -u)
+[ -z "$NOT_BUNDLED" ] || err "Libraries not bundled, add their RPMs to ALL_PACKAGES:
+$NOT_BUNDLED"
+# glibc itself isn't bundled, so nothing may need a newer one than EL9's.
+TOO_NEW=$(grep -aoE 'GLIBC_(ABI_[A-Z0-9_]+|2\.(3[5-9]|[4-9][0-9]))' "${ELF_FILES[@]}" | sort -u)
+[ -z "$TOO_NEW" ] || err "Binaries need a newer glibc than the 2.34 floor (wrong build base?):
+$TOO_NEW"
+log "  Library audit passed - all dependencies bundled."
+
 # --- Verification ------------------------------------------------------------
-verify_python_import() {
-    local module_name="$1"
-    local failure_output
-
-    if ! failure_output=$(PYTHONHOME="$APPDIR/usr" \
-        LD_LIBRARY_PATH="$LIBPATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-        "$APPDIR/usr/bin/python3" -c "import ${module_name}" 2>&1); then
-        echo "$failure_output" >&2
-        err "Bundled Python cannot import ${module_name}. The AppImage would fail at runtime."
-    fi
-}
-
+# Run Python the way AppRun does. The build host has its own Python 3.9 (dnf
+# needs it), so also check that nothing was picked up from outside the AppDir.
 log "Checking bundled Python imports..."
-verify_python_import "termcolor"
-verify_python_import "WoeUSB.core"
-verify_python_import "wx"
-verify_python_import "wx.adv"
+"$APPDIR/usr/bin/python3" -I -c '
+import sys, encodings, termcolor, WoeUSB.core, wx, wx.adv
+outside = [m.__name__ for m in (encodings, termcolor, WoeUSB, wx)
+           if not m.__file__.startswith(sys.argv[1])]
+sys.exit(f"imported from outside the AppDir: {outside}" if outside else 0)
+' "$APPDIR/" || err "Bundled Python is broken. The AppImage would fail at runtime."
 log "  Bundled Python imports passed"
 
 log "Checking bundled tools..."
-for f in usr/bin/{parted,grub2-install,mkfs.fat,mkntfs,7z} usr/lib64/libgtk-3.so.0 \
+for f in usr/sbin/{parted,grub2-install,mkfs.fat,mkntfs} usr/bin/7z usr/lib64/libgtk-3.so.0 \
          usr/lib/grub/i386-pc/normal.mod; do
-    [ -e "$APPDIR/$f" ] || warn "Missing $f"
+    [ -e "$APPDIR/$f" ] || err "Missing $f"
 done
-
-# --- Automated ldd audit -----------------------------------------------------
-# Scan every ELF binary for missing shared libraries BEFORE packaging.
-# ldd falls back to the build machine's own libraries, so this only catches
-# what a clean Fedora container lacks (the workflow and README build in one).
-log "Running library audit..."
-MISSING_LIBS=$(find "$APPDIR" -type f -print0 | xargs -0 file 2>/dev/null | grep ELF | cut -d: -f1 \
-    | tr '\n' '\0' | LD_LIBRARY_PATH="$LIBPATH" xargs -0 ldd 2>/dev/null \
-    | awk '/not found/ {print $1}' | sort -u)
-[ -z "$MISSING_LIBS" ] || err "Missing libraries, add their RPMs to ALL_PACKAGES:
-$MISSING_LIBS"
-log "  Library audit passed - all dependencies bundled."
 
 # --- Package -----------------------------------------------------------------
 log "Packaging AppImage..."

@@ -17,6 +17,8 @@ jobs:
     name: Build WoeUSB-ng AppImage
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    outputs:
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - name: Check out repository
@@ -58,20 +60,22 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Building WoeUSB-ng v${version}"
 
-      - name: Build AppImage in Fedora
+      - name: Build AppImage in AlmaLinux 9
         shell: bash
         run: |
           set -euo pipefail
 
+          # EL9 sets the oldest glibc (2.34) the AppImage runs on; see build.sh.
           docker run --rm \
             -e WOEUSB_VERSION="${{ steps.version.outputs.version }}" \
             -v "$PWD":/work \
             -w /work \
-            fedora:latest \
+            almalinux:9 \
             bash -lc '
               set -euo pipefail
 
-              dnf install -y git cpio file
+              dnf install -y epel-release
+              dnf install -y dnf-plugins-core git cpio file patchelf
 
               ./build.sh "$WOEUSB_VERSION"
 
@@ -92,3 +96,39 @@ jobs:
           path: build/WoeUSB-ng-${{ steps.version.outputs.version }}-x86_64.AppImage
           if-no-files-found: error
           retention-days: 14
+
+  test:
+    # The build container hides missing host dependencies, so run the
+    # AppImage on the distros users run it on.
+    name: Test on ${{ matrix.image }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - docker.io/library/almalinux:9
+          - docker.io/library/debian:12
+          - docker.io/library/debian:13
+          - docker.io/library/ubuntu:22.04
+          - docker.io/library/ubuntu:24.04
+          - docker.io/library/fedora:latest
+          - docker.io/opensuse/leap:15.6
+          - docker.io/opensuse/tumbleweed:latest
+          - docker.io/library/archlinux:latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download AppImage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: WoeUSB-ng-${{ needs.build.outputs.version }}-x86_64.AppImage
+
+      - name: Run smoke test
+        shell: bash
+        run: |
+          chmod +x WoeUSB-ng-*.AppImage
+          ./test.sh WoeUSB-ng-*.AppImage "${{ matrix.image }}"
