@@ -29,6 +29,10 @@ export GTK_EXE_PREFIX="$APPDIR/usr"
 export GIO_MODULE_DIR="$APPDIR/usr/lib64/gio/modules"
 export GDK_PIXBUF_MODULE_FILE="$APPDIR/usr/lib64/gdk-pixbuf-2.0/2.10.0/loaders.cache"
 
+# The bundled fontconfig can't parse newer hosts' config files and warns about
+# every one, so it reads its own (build.sh keeps it inside the AppDir).
+export FONTCONFIG_PATH="$APPDIR/etc/fonts"
+
 # Pango
 export PANGO_LIBDIR="$APPDIR/usr/lib"
 
@@ -119,5 +123,20 @@ if [ "${1:-}" = "--cli" ]; then
     run_cli "$@"
 fi
 
-# Default: launch GUI
-py 'from WoeUSB import gui; gui.run()' "$@"
+# Default: launch GUI. EPEL's wxPython 4.2.0 checks for a display with
+# XOpenDisplay, but compositors that start Xwayland without an auth cookie
+# (Hyprland, Sway...) only let the session user in, not root. Check through
+# GDK instead, like newer wxPython, so a Wayland display counts too.
+py '
+import ctypes, wx
+gdk = ctypes.CDLL("libgdk-3.so.0")
+gdk.gdk_display_open.restype = ctypes.c_void_p
+def display_available():
+    display = gdk.gdk_display_open(None)
+    if display:
+        gdk.gdk_display_close(ctypes.c_void_p(display))
+    return bool(display)
+wx.App.IsDisplayAvailable = staticmethod(display_available)
+from WoeUSB import gui
+gui.run()
+' "$@"

@@ -284,6 +284,24 @@ find "$APPDIR/usr/share/locale" -mindepth 1 -maxdepth 1 ! -name "en*" \
 mv "$APPDIR"/usr/lib64/gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-svg.so "$APPDIR/usr/lib64/" || \
     err "SVG pixbuf loader missing from the extracted RPMs"
 
+# AppRun points fontconfig at its own config, since newer hosts' configs make it
+# warn. Keep that config inside the AppDir: its conf.d links are absolute, and
+# its first cache dir is Fedora's, which root would create on other hosts.
+for f in "$APPDIR"/etc/fonts/conf.d/*.conf; do
+    case $(readlink "$f") in /*) ln -srf "$APPDIR$(readlink "$f")" "$f" ;; esac
+done
+[ -z "$(find -L "$APPDIR/etc/fonts/conf.d" -type l)" ] || err "Dangling fontconfig conf.d links"
+sed -i 's|<cachedir>/usr/lib/fontconfig/cache</cachedir>|<cachedir>/var/cache/fontconfig</cachedir>|' \
+    "$APPDIR/etc/fonts/fonts.conf" || err "Failed to patch fonts.conf"
+# fontconfig also parses its compiled-in template dir, the host's conf.avail,
+# just to describe the rules there. A relative path of the same length makes it
+# look in FONTCONFIG_PATH instead, which has none.
+FONTCONFIG_LIB=$(realpath "$APPDIR/usr/lib64/libfontconfig.so.1")
+[ "$(grep -ao /usr/share/fontconfig/conf.avail "$FONTCONFIG_LIB" | wc -l)" = 1 ] || \
+    err "fontconfig's template dir not found in $FONTCONFIG_LIB"
+sed -i 's|/usr/share/fontconfig/conf\.avail|./././././././././././conf.avail|' "$FONTCONFIG_LIB" || \
+    err "Failed to patch fontconfig's template dir"
+
 # --- RPATH -------------------------------------------------------------------
 # Point every bundled ELF at usr/lib64 instead of having AppRun export
 # LD_LIBRARY_PATH, which leaked the bundled libs into the host tools WoeUSB-ng

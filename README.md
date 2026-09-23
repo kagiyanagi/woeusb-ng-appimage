@@ -17,7 +17,7 @@ chmod +x WoeUSB-ng-*-x86_64.AppImage
 ./WoeUSB-ng-*-x86_64.AppImage
 ```
 
-The app will ask for root privileges via a polkit dialog automatically.
+The app will ask for root privileges via a polkit dialog automatically. Don't start the GUI with `sudo`: sudo drops the Wayland session variables, so under Hyprland, Sway and other compositors that keep root off Xwayland it can't open a window.
 
 ### CLI
 
@@ -78,7 +78,7 @@ The build machine has its own libraries and Python, which can hide what a user's
 ./test.sh build/WoeUSB-ng-*-x86_64.AppImage docker.io/library/debian:13 docker.io/opensuse/leap:15.6
 ```
 
-For each image it checks that the CLI starts, that every bundled ELF file resolves against that distro's own libraries, and that the GUI opens its window on a virtual X display. It needs podman or docker; the CI workflow runs it on nine distros.
+For each image it checks that the CLI starts, that every bundled ELF file resolves against that distro's own libraries, that the bundled tools work, and that the GUI opens its window on X11 and on Wayland without X11, as it runs for root under Hyprland or Sway. It needs podman or docker; the CI workflow runs it on nine distros.
 
 ## License
 
