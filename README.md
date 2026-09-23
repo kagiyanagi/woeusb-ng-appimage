@@ -48,88 +48,25 @@ Standard system utilities (mount, lsblk, grep, etc.) are expected from the host.
 
 ## Building from source
 
-### Requirements
-
-- **Fedora** (or a Fedora toolbox/container) - the build script uses `dnf download` to fetch RPMs
-- Build tools: `git`, `wget`, `python3`, `python3-pip`, `patchelf`, `rpm-build`, `cpio`, `file`, `findutils`, `binutils`
-- `python3-wxpython4` installed on the build system (for bundling)
-
-### Build
-
-```bash
-# Install build deps (Fedora)
-sudo dnf install -y git wget python3 python3-pip python3-wxpython4 patchelf rpm-build cpio file findutils binutils
-
-# Build the AppImage (defaults to WoeUSB-ng v0.2.12)
-./build.sh
-
-# Or specify a version
-./build.sh 0.2.12
-```
-
-The output AppImage will be at `build/WoeUSB-ng-<version>-x86_64.AppImage`.
-
-### Build with Docker (any distro)
-
-You don't need Fedora installed. Use Docker to build from any Linux distro:
-
-```bash
-# One-liner
-docker run --rm -v "$PWD":/build -w /build fedora:latest bash -c \
-  'dnf install -y git wget python3 python3-pip python3-wxpython4 patchelf rpm-build cpio file findutils binutils && ./build.sh 0.2.12'
-
-# Copy the AppImage out of build/
-ls build/WoeUSB-ng-*-x86_64.AppImage
-```
-
-Or with Podman (rootless, common on Fedora/RHEL):
+The build script fetches Fedora RPMs with `dnf download`, so it runs in a Fedora container on any distro:
 
 ```bash
 podman run --rm -v "$PWD":/build:Z -w /build fedora:latest bash -c \
-  'dnf install -y git wget python3 python3-pip python3-wxpython4 patchelf rpm-build cpio file findutils binutils && ./build.sh 0.2.12'
+  'dnf install -y git cpio file && ./build.sh'
 ```
 
-### Build with Fedora Toolbox
+`docker run` takes the same arguments. On Fedora or in a toolbox you can run `sudo dnf install -y git cpio file && ./build.sh` directly, but a clean container is safer: the library audit falls back to the build machine's own libraries, so a desktop install can hide libraries missing from the bundle.
 
-```bash
-toolbox create woeusb-build
-toolbox enter woeusb-build
-sudo dnf install -y git wget python3 python3-pip python3-wxpython4 patchelf rpm-build cpio file findutils binutils
-./build.sh 0.2.12
-```
-
-### Project structure
-
-```
-.
-├── build.sh                  # Main build script
-├── resources/
-│   ├── AppRun                # AppImage entry point / launcher
-│   └── woeusb-ng.desktop     # Desktop entry for app menus
-└── build/                    # Created during build (gitignored)
-    ├── WoeUSB-ng/            # Cloned source
-    ├── deps-rpms/            # Downloaded RPMs
-    ├── AppDir/               # Assembled AppImage contents
-    └── WoeUSB-ng-*.AppImage  # Final output
-```
+`./build.sh` builds WoeUSB-ng v0.2.12. Pass a version (`./build.sh 0.2.12`) to build another `v<version>` tag from the [WoeUSB-ng repo](https://github.com/WoeUSB/WoeUSB-ng/tags). The AppImage lands in `build/WoeUSB-ng-<version>-x86_64.AppImage`.
 
 ### How the build works
 
 1. Clones WoeUSB-ng at the specified git tag
-2. Downloads runtime dependency RPMs from Fedora repos (single batched `dnf download`)
-3. Extracts RPMs and flattens the directory structure into an AppDir
-4. Copies the host Python interpreter, stdlib, and wxPython into the AppDir
-5. Patches all ELF binaries with relative RPATHs so they find bundled libraries
-6. Generates GTK/GDK caches and compiles GLib schemas
-7. Packages everything into an AppImage using appimagetool
-
-### Rebuilding for a new WoeUSB-ng version
-
-```bash
-./build.sh <new-version>
-```
-
-The version must correspond to a `v<version>` git tag on the [WoeUSB-ng repo](https://github.com/WoeUSB/WoeUSB-ng/tags).
+2. Downloads runtime dependency RPMs from Fedora repos (single batched `dnf download`), including Python and wxPython
+3. Extracts the RPMs into an AppDir and copies WoeUSB-ng into the bundled Python's site-packages
+4. Compiles GLib schemas and checks that the bundled Python can import WoeUSB-ng and wxPython
+5. Audits every ELF file for missing libraries
+6. Packages everything into an AppImage using appimagetool
 
 ## License
 

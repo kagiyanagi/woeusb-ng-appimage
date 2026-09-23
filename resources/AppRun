@@ -7,24 +7,16 @@
 APPDIR=$(dirname "$(readlink -f "$0")")
 
 # --- Library and binary paths ------------------------------------------------
-export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$APPDIR/usr/lib64:$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export PATH="$APPDIR/usr/bin:$PATH"
 
 # --- Python ------------------------------------------------------------------
-PYTHON_VERSION=$("$APPDIR/usr/bin/python3" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "3.13")
 export PYTHONHOME="$APPDIR/usr"
-PYTHONPATH_BUNDLED="$APPDIR/usr/lib/python3/site-packages:$APPDIR/usr/lib/python${PYTHON_VERSION}:$APPDIR/usr/lib/python${PYTHON_VERSION}/lib-dynload"
-export PYTHONPATH="$PYTHONPATH_BUNDLED${PYTHONPATH:+:$PYTHONPATH}"
 
 # --- GTK / GDK / Pango -------------------------------------------------------
 export GTK_DATA_PREFIX="$APPDIR/usr"
 export GTK_THEME=Adwaita
-export GTK_PATH="$APPDIR/usr/lib/gtk-3.0"
 export GTK3_MODULES=""
-
-# GDK pixbuf loaders
-export GDK_PIXBUF_MODULE_FILE="$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"
-export GDK_PIXBUF_MODULEDIR="$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"
 
 # Pango
 export PANGO_LIBDIR="$APPDIR/usr/lib"
@@ -40,33 +32,10 @@ export GSETTINGS_BACKEND=memory
 # Icons and themes
 export XDG_DATA_DIRS="$APPDIR/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 
-# Fontconfig - use host fonts with our libs
-export FONTCONFIG_PATH="${FONTCONFIG_PATH:-/etc/fonts}"
-
-# Pass through D-Bus so GTK file dialogs and polkit work correctly when present.
-export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}"
-
-# --- GRUB modules ------------------------------------------------------------
-if [ -d "$APPDIR/usr/lib/grub" ]; then
-    export GRUB_PREFIX="$APPDIR/usr/lib/grub"
-fi
-
 # --- Launch helpers -----------------------------------------------------------
-run_cli() {
-    exec "$APPDIR/usr/bin/python3" -W ignore::SyntaxWarning -c "
-import sys
-sys.argv = ['woeusb'] + sys.argv[1:]
-from WoeUSB import core
-core.run()
-" "$@"
-}
-
-run_about() {
-    exec "$APPDIR/usr/bin/python3" -W ignore::SyntaxWarning -c "
-from WoeUSB import core
-core.print_application_info()
-"
-}
+py() { exec "$APPDIR/usr/bin/python3" -W ignore::SyntaxWarning -c "$@"; }
+run_cli()   { py 'import sys; sys.argv[0] = "woeusb"; from WoeUSB import core; core.run()' "$@"; }
+run_about() { py 'from WoeUSB import core; core.print_application_info()'; }
 
 check_wx() {
     local wx_import_error
@@ -115,31 +84,19 @@ if [ "$EUID" -ne 0 ] && [ "$NEEDS_ROOT" -eq 1 ]; then
     echo "WoeUSB-ng requires root privileges for disk operations."
 
     # Prefer pkexec (shows a GUI auth dialog), fall back to sudo
-    if command -v pkexec &>/dev/null; then
-        echo "Elevating with pkexec..."
-        LAUNCHER="${APPIMAGE:-$(readlink -f "$0")}"
-        exec pkexec env \
-            DISPLAY="${DISPLAY:-}" \
-            XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}" \
-            WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
-            XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
-            DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" \
-            "$LAUNCHER" "$@"
-    elif command -v sudo &>/dev/null; then
-        echo "pkexec not found, elevating with sudo..."
-        LAUNCHER="${APPIMAGE:-$(readlink -f "$0")}"
-        exec sudo \
-            DISPLAY="${DISPLAY:-}" \
-            XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}" \
-            WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
-            XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
-            DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" \
-            "$LAUNCHER" "$@"
-    else
+    ELEVATE=$(command -v pkexec || command -v sudo) || {
         echo "ERROR: Neither pkexec nor sudo is available." >&2
         echo "       Re-run as root: sudo $0 $*" >&2
         exit 1
-    fi
+    }
+    echo "Elevating with ${ELEVATE##*/}..."
+    exec "$ELEVATE" env \
+        DISPLAY="${DISPLAY:-}" \
+        XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}" \
+        WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+        XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
+        DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" \
+        "${APPIMAGE:-$(readlink -f "$0")}" "$@"
 fi
 
 # --- Launch ------------------------------------------------------------------
@@ -149,7 +106,4 @@ if [ "${1:-}" = "--cli" ]; then
 fi
 
 # Default: launch GUI
-exec "$APPDIR/usr/bin/python3" -W ignore::SyntaxWarning -c "
-from WoeUSB import gui
-gui.run()
-" "$@"
+py 'from WoeUSB import gui; gui.run()' "$@"

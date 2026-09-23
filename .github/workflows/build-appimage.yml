@@ -25,11 +25,12 @@ jobs:
       - name: Resolve WoeUSB-ng version
         id: version
         shell: bash
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
           set -euo pipefail
 
-          input="${{ github.event.inputs.version }}"
-          input="${input//[[:space:]]/}"
+          input="${INPUT_VERSION//[[:space:]]/}"
           input="${input,,}"
           input="${input:-latest}"
 
@@ -57,24 +58,12 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Building WoeUSB-ng v${version}"
 
-      - name: Restore RPM cache
-        # Reuse downloaded Fedora RPMs between manual runs.
-        uses: actions/cache@v4
-        with:
-          path: build/deps-rpms
-          key: woeusb-ng-rpms-${{ runner.os }}-${{ steps.version.outputs.version }}-${{ hashFiles('build.sh') }}
-          restore-keys: |
-            woeusb-ng-rpms-${{ runner.os }}-${{ steps.version.outputs.version }}-
-            woeusb-ng-rpms-${{ runner.os }}-
-
       - name: Build AppImage in Fedora
         shell: bash
         run: |
           set -euo pipefail
 
           docker run --rm \
-            -e HOST_UID="$(id -u)" \
-            -e HOST_GID="$(id -g)" \
             -e WOEUSB_VERSION="${{ steps.version.outputs.version }}" \
             -v "$PWD":/work \
             -w /work \
@@ -82,18 +71,12 @@ jobs:
             bash -lc '
               set -euo pipefail
 
-              # Keep generated build files writable by the runner.
-              trap "chown -R ${HOST_UID}:${HOST_GID} /work/build 2>/dev/null || true" EXIT
+              dnf install -y git cpio file
 
-              dnf install -y \
-                git wget python3 python3-pip python3-wxpython4 \
-                patchelf rpm-build cpio file findutils binutils
-
-              ./build.sh "$WOEUSB_VERSION" --no-clean
+              ./build.sh "$WOEUSB_VERSION"
 
               # Smoke test the artifact before uploading it.
               app="build/WoeUSB-ng-${WOEUSB_VERSION}-x86_64.AppImage"
-              test -s "$app"
 
               APPIMAGE_EXTRACT_AND_RUN=1 "$app" --version | tee build/appimage-version.txt
               grep -Fx "$WOEUSB_VERSION" build/appimage-version.txt
@@ -109,15 +92,3 @@ jobs:
           path: build/WoeUSB-ng-${{ steps.version.outputs.version }}-x86_64.AppImage
           if-no-files-found: error
           retention-days: 14
-
-      - name: Write job summary
-        # Show the produced version and artifact name in the run summary.
-        shell: bash
-        run: |
-          {
-            echo "## AppImage build"
-            echo
-            echo "- Version: \`${{ steps.version.outputs.version }}\`"
-            echo "- Artifact: \`WoeUSB-ng-${{ steps.version.outputs.version }}-x86_64.AppImage\`"
-            echo "- Retention: 14 days"
-          } >> "$GITHUB_STEP_SUMMARY"
