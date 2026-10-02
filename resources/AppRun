@@ -108,13 +108,23 @@ if [ "$EUID" -ne 0 ] && [ "$NEEDS_ROOT" -eq 1 ]; then
         exit 1
     }
     echo "Elevating with ${ELEVATE##*/}..."
-    exec "$ELEVATE" env \
+    "$ELEVATE" env \
         DISPLAY="${DISPLAY:-}" \
         XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}" \
         WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
         XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
         DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" \
         "${APPIMAGE:-$(readlink -f "$0")}" "$@"
+    rc=$?
+
+    # pkexec exits 127 when it can't elevate at all: no polkit agent, or a
+    # sandbox that ignores setuid (firejail, as in the AppImage catalog's
+    # test). Open the GUI anyway instead of vanishing; it warns that it
+    # can't write to drives. 126 means the user dismissed the dialog.
+    if [ "$rc" -ne 127 ] || [ "${ELEVATE##*/}" != pkexec ] || [ "${1:-}" = "--cli" ]; then
+        exit "$rc"
+    fi
+    echo "WARNING: Could not get root privileges; starting the GUI without them." >&2
 fi
 
 # --- Launch ------------------------------------------------------------------
@@ -128,7 +138,7 @@ fi
 # (Hyprland, Sway...) only let the session user in, not root. Check through
 # GDK instead, like newer wxPython, so a Wayland display counts too.
 py '
-import ctypes, wx
+import ctypes, os, wx
 gdk = ctypes.CDLL("libgdk-3.so.0")
 gdk.gdk_display_open.restype = ctypes.c_void_p
 def display_available():
@@ -138,5 +148,10 @@ def display_available():
     return bool(display)
 wx.App.IsDisplayAvailable = staticmethod(display_available)
 from WoeUSB import gui
+if os.geteuid() != 0:
+    wx.CallAfter(wx.MessageBox,
+        "WoeUSB-ng could not get root privileges, so it cannot write to USB drives.\n\n"
+        "Make sure a polkit authentication agent is running, then start WoeUSB-ng again.",
+        "WoeUSB-ng", wx.OK | wx.ICON_WARNING)
 gui.run()
 ' "$@"

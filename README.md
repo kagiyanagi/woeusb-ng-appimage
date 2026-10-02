@@ -17,7 +17,7 @@ chmod +x WoeUSB-ng-*-x86_64.AppImage
 ./WoeUSB-ng-*-x86_64.AppImage
 ```
 
-The app will ask for root privileges via a polkit dialog automatically. Don't start the GUI with `sudo`: sudo drops the Wayland session variables, so under Hyprland, Sway and other compositors that keep root off Xwayland it can't open a window.
+The app will ask for root privileges via a polkit dialog automatically. If polkit can't grant them (no authentication agent, or a sandbox), the GUI opens anyway and warns that it can't write to drives. Don't start the GUI with `sudo`: sudo drops the Wayland session variables, so under Hyprland, Sway and other compositors that keep root off Xwayland it can't open a window.
 
 ### CLI
 
