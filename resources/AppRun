@@ -100,29 +100,38 @@ fi
 
 if [ "$EUID" -ne 0 ] && [ "$NEEDS_ROOT" -eq 1 ]; then
     echo "WoeUSB-ng requires root privileges for disk operations."
+    SELF="${APPIMAGE:-$(readlink -f "$0")}"
+    # Pass the session along so the GUI can reach the display as root.
+    SESSION=(env
+        DISPLAY="${DISPLAY:-}"
+        XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+        WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}"
+        XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}"
+        DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}")
 
-    # Prefer pkexec (shows a GUI auth dialog), fall back to sudo
-    ELEVATE=$(command -v pkexec || command -v sudo) || {
-        echo "ERROR: Neither pkexec nor sudo is available." >&2
-        echo "       Re-run as root: sudo $0 $*" >&2
+    # pkexec asks for the password in a GUI dialog. It exits 126 when the
+    # user dismisses it and 127 when it can't elevate at all: no polkit agent,
+    # or a sandbox that ignores setuid (firejail, as in the AppImage catalog's
+    # test).
+    if command -v pkexec >/dev/null; then
+        echo "Elevating with pkexec..."
+        pkexec "${SESSION[@]}" "$SELF" "$@"
+        rc=$?
+        [ "$rc" -eq 127 ] || exit "$rc"
+    fi
+
+    # sudo can only ask for the password in a terminal.
+    if [ -t 0 ] && command -v sudo >/dev/null; then
+        echo "Elevating with sudo..."
+        exec sudo "${SESSION[@]}" "$SELF" "$@"
+    fi
+
+    # No way to elevate here (e.g. no polkit and started from the desktop).
+    # Open the GUI anyway instead of vanishing; it warns that it can't write
+    # to drives.
+    if [ "${1:-}" = "--cli" ]; then
+        echo "ERROR: Could not get root privileges. Re-run as root: sudo $SELF $*" >&2
         exit 1
-    }
-    echo "Elevating with ${ELEVATE##*/}..."
-    "$ELEVATE" env \
-        DISPLAY="${DISPLAY:-}" \
-        XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}" \
-        WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
-        XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" \
-        DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" \
-        "${APPIMAGE:-$(readlink -f "$0")}" "$@"
-    rc=$?
-
-    # pkexec exits 127 when it can't elevate at all: no polkit agent, or a
-    # sandbox that ignores setuid (firejail, as in the AppImage catalog's
-    # test). Open the GUI anyway instead of vanishing; it warns that it
-    # can't write to drives. 126 means the user dismissed the dialog.
-    if [ "$rc" -ne 127 ] || [ "${ELEVATE##*/}" != pkexec ] || [ "${1:-}" = "--cli" ]; then
-        exit "$rc"
     fi
     echo "WARNING: Could not get root privileges; starting the GUI without them." >&2
 fi
@@ -151,7 +160,8 @@ from WoeUSB import gui
 if os.geteuid() != 0:
     wx.CallAfter(wx.MessageBox,
         "WoeUSB-ng could not get root privileges, so it cannot write to USB drives.\n\n"
-        "Make sure a polkit authentication agent is running, then start WoeUSB-ng again.",
+        "Start it from a terminal so it can ask for your password with sudo, "
+        "or make sure polkit and a polkit authentication agent are running.",
         "WoeUSB-ng", wx.OK | wx.ICON_WARNING)
 gui.run()
 ' "$@"
